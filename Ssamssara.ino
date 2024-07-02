@@ -1,20 +1,36 @@
-#include "WIFIManager.h"  // WIFI
-#include "MQTTManager.h"  // MQTT 통신
-#include "TH11.h"         // 온습도
+#include "WIFIManager.h"        // WIFI
+#include "MQTTManager.h"        // MQTT 통신
+#include "TH11.h"               // 온습도
+#include "LiquidCrystalLCD.h"   // LCD 창
+#include "soilMoistureSensor.h" // 토양습도
+#include "UTC_Time.h"           // UTC Time
+#include <time.h>               // UTC 구할때 사용할 Library
+#include "GrowLED.h"            // 식물 생장 LED
 
+const int operatingPin = D0; // WiFi 연결을 위한 button
 int operatingMode = 1;
-int operatingPin = D2;
 int btnState;
 unsigned long currentMillis = 0;
 unsigned long preMillis = 0;
+const int interval = 1 * 1000; // 시분할 1초 단위로 작동
 
 // WIFI 없어도 온습도 data 유지
 float temp = 0;
-float hum = 0;
 
 void setup() {
-  pinMode(operatingPin, INPUT);
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(operatingPin, INPUT); // ROM 정보로 WiFi 연결
+  pinMode(LED_BUILTIN, OUTPUT); // ESP8266 보드의 LED
+  pinMode(soilSensor, INPUT);   // 토양습도센서
+  // pinMode(waterPump, OUTPUT);   // 워터펌프
+  pinMode(moistureLED, OUTPUT); // 토양 습도 알림 LED
+  pinMode(growLED, OUTPUT);     // 식물 생장 LED
+  
+  lcd.init(); // lcd 객체 초기화
+  lcd.clear();  // 화면 지우고 커서를 왼쪽 상단 모서리로 옮김         
+  lcd.backlight();      // 백라이트 on
+  lcd.setCursor(1,0);
+  lcd.print("initializing...");
+
   randomSeed(micros());
 
   EEPROM.begin(255);
@@ -58,21 +74,22 @@ void setup() {
     Serial.println(SSID_temp);
     Serial.println(Password);
   }
+  
+  setupMQTT();
+
+  // UTC Time 구하기
+  configTime(9 * 3600, 0, "pool.ntp.org", "time.nist.gov");  // Timezone 9 for Korea
+  while (!time(nullptr)) delay(500);
 }
 
 
 void loop() {
   currentMillis = millis();
   int btnState = digitalRead(operatingPin);
-  // Serial.println(btnState);
 
   // 최초 1회에 대해 WiFi 정보 생성
   if (operatingMode == 2 && btnState) {
-    Serial.println("버튼 1회 작동 : ");
-    Serial.println(operatingMode);
     operatingMode = 1;
-    // Wemos Board 자체적으로 WiFi 구축
-    // 숙주 WiFi 에 기생하기 위한 첫 걸음
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
@@ -114,9 +131,6 @@ void loop() {
       Serial.println("Switching AP >>>>> STA");
       delay(1000);
 
-      // MQTT 연결
-      setupMQTT();
-      reconnect();
     } else {
       Serial.println("WiFi setting isn't yet");
       Serial.println("Check your WiFi information");
@@ -141,30 +155,37 @@ void networking() {
 }
 
 void sensing() {
+  if (currentMillis - preMillis > interval) {
+    temp = round(readTemp() * 10.0) / 10.0;  // 대기 중 온도
+    int soil = getSoilMoisture();            // 토양 습도
 
-  // 온습도 센서 측정 + 시분할 처리
-  if (currentMillis - preMillis > DHTSensingDelay) {
-    temp = readTemp();  // 온도
-    hum = readHum();    // 습도
+    lcd.clear();
+    const String getTime = getUtcTime();  // UTC Time 가져오기
+    onLiquidCrystal(temp, soil, getTime); // Liquid LCD 에 상태 표시
+    controllGrowLED(getTime);             // 식물 생장 LED 컨트롤
 
-    String sensingLog = "Temp:" + String(temp) + "C | Hum:" + String(hum) + "% ";
-    Serial.println(sensingLog);
+    // MQTT 통신이 끊어졌을 경우 재연결
+    if(pubClient.connected() == 0 && getTime.substring(12,14) == "00"){
+      reconnect();
+    }
+
+    String sensingLog = "Temp: " + String(temp) + "C | Soil: " + String(soil) + "%";
+    // Serial.println(sensingLog);
 
     preMillis = currentMillis;
 
     // 숙주 WiFi 연결된 상태 + MQTT 연결될 떄만 data 전송
-    if (WiFi.status() == WL_CONNECTED && pubClient.connected()) {
-      // MQTT 로 data 전송하기 위한 JSON 으로 형변환
+    if (WiFi.status() == WL_CONNECTED && pubClient.connected() && getTime.substring(12,14) == "00") { // MQTT data 는 1분 단위로 전송, 일정 시간이 지나면 MQTT 는 자동으로 연결이 끊긴다.
+  
+      // MQTT 로 data 전송하기 위한 직렬화
       String tempStr = String(temp);
-      String humStr = String(hum);
-      String readAnalogStr = "1023";
+      String soilStr = String(soil);
       String sensorID = "Ssamssara";
 
       // JSON 객체 MQTT 로 publish
       String data = String("{\"sensor_id\" : \"" + sensorID
-                           + "\", \"analog\": \"" + readAnalogStr
                            + "\", \"temp\" : \"" + tempStr
-                           + "\", \"hum\" : \"" + humStr
+                           + "\", \"soil\" : \"" + soilStr
                            + "\"}");
 
       String rootTopic = "/IoT/Sensor/" + sensorID;
