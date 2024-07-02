@@ -57,9 +57,6 @@ void publish(String topicStr, String payloadStr) {
   pubClient.loop();
   pubClient.publish(topic, payload); // Server 로 JSON data 전송
 
-  String log = String("publish topic : " + topicStr + " msg : " +payloadStr);
-  Serial.println(log);
-
   delete topic;
   delete payload;
 }
