@@ -17,27 +17,38 @@ const int interval = 1 * 1000; // 시분할 1초 단위로 작동
 // WIFI 없어도 온습도 data 유지
 float temp = 0;
 
+// 식물 생장 LED 릴레이 상태
+bool growLEDRelayStatus = true;
+
+
+
 void setup() {
-  pinMode(operatingPin, INPUT); // ROM 정보로 WiFi 연결
-  pinMode(LED_BUILTIN, OUTPUT); // ESP8266 보드의 LED
-  pinMode(soilSensor, INPUT);   // 토양습도센서
-  // pinMode(waterPump, OUTPUT);   // 워터펌프
-  pinMode(moistureLED, OUTPUT); // 토양 습도 알림 LED
-  pinMode(growLED, OUTPUT);     // 식물 생장 LED
-  
-  lcd.init(); // lcd 객체 초기화
-  lcd.clear();  // 화면 지우고 커서를 왼쪽 상단 모서리로 옮김         
+  pinMode(operatingPin, INPUT);       // ROM 정보로 WiFi 연결
+  pinMode(LED_BUILTIN, OUTPUT);       // ESP8266 보드의 LED
+  pinMode(soilSensor, INPUT);         // 토양습도센서
+  // pinMode(waterPump, OUTPUT);      // 워터펌프
+  pinMode(moistureLED, OUTPUT);       // 토양 습도 알림 LED
+  pinMode(growLED, OUTPUT);           // 식물 생장 LED
+  pinMode(growLEDRelay, OUTPUT);      // 식물 생장 LED Relay 모듈
+
+  // 최초 부팅 시 식물 생장 LED 켜기
+  digitalWrite(growLED, HIGH);
+  digitalWrite(growLEDRelay, HIGH);
+
+  lcd.init();           // lcd 객체 초기화
+  lcd.clear();          // 화면 지우고 커서를 왼쪽 상단 모서리로 옮김         
   lcd.backlight();      // 백라이트 on
-  lcd.setCursor(1,0);
+  lcd.setCursor(0,0);
   lcd.print("initializing...");
 
   randomSeed(micros());
 
   EEPROM.begin(255);
   dht.begin();
-  Serial.begin(115200);  // Wemos 의 최소 baud rate
+  Serial.begin(115200);
   Serial.println("Start WiFi");
   Serial.println("Start AP");
+
 
   long startPoint = micros();
   WiFi.mode(WIFI_AP);
@@ -74,6 +85,9 @@ void setup() {
     Serial.println(SSID_temp);
     Serial.println(Password);
   }
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Turn on the WiFi");
   
   setupMQTT();
 
@@ -82,7 +96,6 @@ void setup() {
   while (!time(nullptr)) delay(500);
 }
 
-
 void loop() {
   currentMillis = millis();
   int btnState = digitalRead(operatingPin);
@@ -90,11 +103,14 @@ void loop() {
   // 최초 1회에 대해 WiFi 정보 생성
   if (operatingMode == 2 && btnState) {
     operatingMode = 1;
-
+    
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
     server.begin();
     delay(1000);
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Switched AP");
     Serial.println("Switching STA >>>>> AP");
   } else if (operatingMode == 1 && btnState) {
     // 2회 실행부터 이미 ROM 에 숙주 WiFi 정보 있으므로 가져옴
@@ -106,6 +122,12 @@ void loop() {
     Serial.println("Password");
 
     if (isValidate(SSID_temp) && isValidate(Password)) {
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Connecting to...");
+      lcd.setCursor(0,1);
+      lcd.print(SSID_temp);
+
       // 숙주 WiFi 에 기생하기
       connectedSSID = SSID_temp;
       connectedPassword = Password;
@@ -160,9 +182,9 @@ void sensing() {
     int soil = getSoilMoisture();            // 토양 습도
 
     lcd.clear();
-    const String getTime = getUtcTime();  // UTC Time 가져오기
-    onLiquidCrystal(temp, soil, getTime); // Liquid LCD 에 상태 표시
-    controllGrowLED(getTime);             // 식물 생장 LED 컨트롤
+    const String getTime = getUtcTime();            // UTC Time 가져오기
+    onLiquidCrystal(temp, soil, getTime);           // Liquid LCD 에 상태 표시
+    growLEDRelayStatus = controllGrowLED(getTime, growLEDRelayStatus);  // 식물 생장 LED 컨트롤
 
     // MQTT 통신이 끊어졌을 경우 재연결
     if(pubClient.connected() == 0 && getTime.substring(12,14) == "00"){
@@ -186,6 +208,7 @@ void sensing() {
       String data = String("{\"sensor_id\" : \"" + sensorID
                            + "\", \"temp\" : \"" + tempStr
                            + "\", \"soil\" : \"" + soilStr
+                           + "\", \"growLED\" : \"" + growLEDRelayStatus
                            + "\"}");
 
       String rootTopic = "/IoT/Sensor/" + sensorID;

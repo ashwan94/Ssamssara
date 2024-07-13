@@ -19,6 +19,9 @@ int getSoilMoisture() {
     digitalWrite(moistureLED, HIGH);
     // digitalWrite(waterPump, HIGH);
   }else{
+    Serial.print("토양습도 : ");
+    Serial.print(soilPercent);
+    Serial.println("%");
     // Serial.println("수분 충분");
     // digitalWrite(waterPump,LOW);
     digitalWrite(moistureLED, LOW);
